@@ -1,0 +1,27 @@
+# Smart AI Photo Gallery - Python 3.12
+# Backend AI & embeddings (TF 2.16+ with legacy Keras compatibility)
+tensorflow-cpu>=2.16.0
+tf-keras>=2.16.0
+deepface>=0.0.90
+opencv-python-headless>=4.8.0
+retina-face>=0.0.13
+
+# Vector database
+chromadb>=0.4.22
+
+# CLIP / text-to-image search
+sentence-transformers>=2.2.2
+torch>=2.0.0
+
+# Clustering & ML
+scikit-learn>=1.3.0
+
+# Frontend
+streamlit>=1.28.0
+
+# Image handling
+Pillow>=10.0.0
+
+# Utilities (often pulled by above; pin if needed)
+numpy>=1.24.0,<2.0.0
+tqdm>=4.65.0
