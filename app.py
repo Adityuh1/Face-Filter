@@ -24,14 +24,27 @@ st.set_page_config(
 
 
 def get_total_photos() -> int:
-    face_col , _ = engine.get_collections
-    return face_col.count()
-
+    """Gets the count of images stored in the Scene collection."""
+    _, scene_vectors = engine.get_collections()
+    return scene_vectors.count()
 
 def get_people_count() -> int:
-    """Return number of unique people found. Replace with engine call."""
-    return 0
+    """Uses the clustering logic to count unique individuals."""
+    clusters = engine.cluster_faces(eps=0.45)
+    # We subtract 1 if 'Unknown' exists to get an accurate 'People' count
+    count = len(clusters)
+    if "Unknown" in clusters:
+        count -= 1
+    return max(0, count)
 
+def get_recent_photos(limit: int = 4) -> list:
+    """Retrieves the last few photos added to the gallery."""
+    _, scene_vectors = engine.get_collections()
+    if scene_vectors.count() == 0:
+        return []
+    # Fetching all to show a 'preview' on the home page
+    results = scene_vectors.get(limit=limit, include=["metadatas"])
+    return [m["file_path"] for m in results["metadatas"]]
 
 def index_uploaded_files(uploaded_files: list) -> None:
     # 1. Create a local folder to store these images permanently

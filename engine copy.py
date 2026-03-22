@@ -57,6 +57,7 @@ def get_face_data(image_path: str | Path) -> Dict[str , Any]:
 def get_scene_embedding(image_path: str | Path):
     model = get_clip_model()
     img = Image.open(str(image_path)).convert("RGB")
+    
     return model.encode([img], convert_to_numpy=True)[0]
 
 # This function is the "Librarian." It takes a photo and puts it on the right shelf in ChromaDB.
@@ -117,4 +118,28 @@ def search_by_text(query_text : str , top_k: int = 10) -> List[str]:
         include=["metadatas"]
     )
     return[m["file_path"] for m in results["metadatas"][0]]
+
+def cluster_faces(eps: float = 0.5, min_samples: int = 2) -> Dict[str, List[str]]:
+    """Groups all indexed faces into 'People' clusters automatically."""
+    face_vectors, _ = get_collections()
     
+    # 1. Pull all data from ChromaDB
+    data = face_vectors.get(include=["embeddings", "metadatas"])
+    embeddings = np.array(data["embeddings"], dtype="float32")
+    metadatas = data["metadatas"]
+
+    if len(embeddings) == 0:
+        return {}
+
+    # 2. Run DBSCAN (Density-Based Spatial Clustering)
+    # metric="cosine" is vital for face recognition accuracy
+    model = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit(embeddings)
+    labels = model.labels_
+
+    # 3. Organize the results into a dictionary
+    clusters = {}
+    for label, meta in zip(labels, metadatas):
+        person_name = f"Person {label}" if label != -1 else "Unknown/Noise"
+        clusters.setdefault(person_name, []).append(meta["file_path"])
+        
+    return clusters

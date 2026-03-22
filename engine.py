@@ -179,11 +179,18 @@ def search_by_face(query_image_path: str | Path, top_k: int = 5) -> List[str]:
     query_data = get_face_data(query_image_path)
     query_emb = query_data["embedding"].tolist()
 
+    # results = face_vectors.query(
+    #     query_embeddings=[query_emb],
+    #     n_results=top_k,
+    #     include=["metadatas", "distances", "ids"],
+    # )
+#  test file updated code 
     results = face_vectors.query(
         query_embeddings=[query_emb],
         n_results=top_k,
-        include=["metadatas", "distances", "ids"],
-    )
+        include=["metadatas", "distances"], # "ids" are already there!
+)
+
 
     metadatas = results.get("metadatas") or []
     if not metadatas:
@@ -224,7 +231,7 @@ def search_by_text(query_text: str, top_k: int = 20) -> List[str]:
     results = scene_vectors.query(
         query_embeddings=[text_emb.tolist()],
         n_results=top_k,
-        include=["metadatas", "distances", "ids"],
+        include=["metadatas", "distances"],
     )
 
     metadatas = results.get("metadatas") or []

@@ -223,6 +223,7 @@ models/
 *.weights
 
 # ChromaDB storage
+chroma_db_data/
 chroma_db/
 db/
 *.parquet
@@ -238,3 +239,6 @@ ENV/
 __pycache__/
 *.py[cod]
 *$py.class
+
+gallery_photos/
+me.jpg
