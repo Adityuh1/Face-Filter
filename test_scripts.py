@@ -2,7 +2,7 @@ import engine
 from pathlib import Path
 
 # 1. Pick a photo of yourself that IS NOT in the 89 photos
-query_image = "me.jpg" 
+query_image = "me1.jpg" 
 
 if not Path(query_image).exists():
     print(f"❌ Error: Please place a photo named '{query_image}' in the folder.")

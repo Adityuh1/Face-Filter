@@ -25,3 +25,41 @@ Pillow>=10.0.0
 # Utilities (often pulled by above; pin if needed)
 numpy>=1.24.0,<2.0.0
 tqdm>=4.65.0
+
+
+#new
+# --- Frontend & UI ---
+streamlit>=1.31.0
+
+# --- AI & Deep Learning Core ---
+# TensorFlow 2.16+ requires tf-keras for legacy support
+tensorflow>=2.16.1
+tf-keras>=2.16.0
+# Protobuf 5.x is required for modern TensorFlow on Python 3.12
+protobuf>=5.26.1,<6.0.0
+
+# --- Face Recognition & Detection ---
+# deepface handles the high-level logic
+deepface>=0.0.93
+# retina-face is the specific engine you are using for accuracy
+retina-face>=0.0.17
+
+# --- Semantic Search (CLIP) ---
+# sentence-transformers provides the CLIP model
+sentence-transformers>=2.6.0
+# torch is the underlying engine for CLIP
+torch>=2.2.0
+
+# --- Vector Database ---
+# chromadb stores your face and scene vectors
+chromadb>=0.5.0
+
+# --- Image Processing & ML Utilities ---
+# Standard OpenCV for image reading and blur checks
+opencv-python>=4.9.0.80
+# Pillow for image manipulation
+Pillow>=10.2.0
+# scikit-learn for the DBSCAN clustering
+scikit-learn>=1.4.0
+# NumPy must be kept below 2.0.0 for compatibility with TF/DeepFace
+numpy>=1.24.0,<2.0.0

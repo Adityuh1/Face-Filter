@@ -1,11 +1,15 @@
 """
 Smart AI Photo Gallery - Streamlit frontend.
-Navigation: Home, Upload/Index, Face Filter, Smart Search.
+Navigation: Home, Upload/Index, Face Filter, Text Search.
 Placeholders for engine.py integration.
 """
 import engine
+import io
 import os
+import zipfile
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
 from pathlib import Path
@@ -24,57 +28,121 @@ st.set_page_config(
 
 
 def get_total_photos() -> int:
-    """Gets the count of images stored in the Scene collection."""
-    _, scene_vectors = engine.get_collections()
-    return scene_vectors.count()
+    """Safely gets the count, returning 0 if the collection is missing."""
+    try:
+        _, scene_vectors = engine.get_collections()
+        return scene_vectors.count()
+    except Exception:
+        return 0
 
 def get_people_count() -> int:
-    """Uses the clustering logic to count unique individuals."""
-    clusters = engine.cluster_faces(eps=0.45)
-    # We subtract 1 if 'Unknown' exists to get an accurate 'People' count
-    count = len(clusters)
-    if "Unknown" in clusters:
-        count -= 1
-    return max(0, count)
+    """Approximate distinct people (face embeddings + DBSCAN at several scales)."""
+    try:
+        return engine.count_estimated_people()
+    except Exception:
+        return 0
 
-def get_recent_photos(limit: int = 4) -> list:
-    """Retrieves the last few photos added to the gallery."""
-    _, scene_vectors = engine.get_collections()
-    if scene_vectors.count() == 0:
+def get_all_gallery_paths() -> list[str]:
+    """All indexed image paths from the scene collection (deduped, sorted)."""
+    try:
+        _, scene_vectors = engine.get_collections()
+        if scene_vectors.count() == 0:
+            return []
+        data = scene_vectors.get(include=["metadatas"])
+        metas = data.get("metadatas") or []
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in metas:
+            if not isinstance(m, dict):
+                continue
+            p = m.get("file_path")
+            if p and p not in seen:
+                seen.add(p)
+                out.append(str(p))
+        return sorted(out, key=lambda x: x.lower())
+    except Exception:
         return []
-    # Fetching all to show a 'preview' on the home page
-    results = scene_vectors.get(limit=limit, include=["metadatas"])
-    return [m["file_path"] for m in results["metadatas"]]
+
+
+def build_image_paths_zip(paths: list[str]) -> bytes:
+    """Pack existing files into a ZIP (streaming in memory). Skips missing paths."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        n = 0
+        for p in paths:
+            if not p or not os.path.isfile(p):
+                continue
+            n += 1
+            arcname = f"{n:04d}_{Path(p).name}"
+            zf.write(p, arcname=arcname)
+    return buf.getvalue()
 
 def index_uploaded_files(uploaded_files: list) -> None:
-    # 1. Create a local folder to store these images permanently
+    """Save files on the main thread, then index up to 4 images at a time in a thread pool."""
     os.makedirs("gallery_photos", exist_ok=True)
-    
-    for uploaded_file in uploaded_files:
-        save_path = os.path.join("gallery_photos" , uploaded_file.name)
-        with open(save_path , "wb") as f:
-            f.write(uploaded_file.getbuffer())
-            
-            engine.index_image(save_path)
-            
-def find_faces_by_reference(reference_image) -> list:
-    """Find gallery photos matching the reference face. Replace with engine call."""
-    return []
+
+    skip_messages: list[str] = []
+    paths_to_index: list[str] = []
+
+    for file in uploaded_files:
+        save_path = os.path.join("gallery_photos", file.name)
+        with open(save_path, "wb") as f:
+            f.write(file.getbuffer())
+
+        is_blurry, score = engine.is_image_blurry(save_path)
+        if is_blurry:
+            skip_messages.append(
+                f"⏩ Skipped '{file.name}': Image too blurry (Score: {score:.1f})"
+            )
+            os.remove(save_path)
+            continue
+        paths_to_index.append(save_path)
+
+    for msg in skip_messages:
+        st.warning(msg)
+
+    if not paths_to_index:
+        return
+
+    def _index_one(path: str) -> tuple[str, str | None]:
+        try:
+            engine.index_image(path)
+            return path, None
+        except Exception as exc:
+            return path, str(exc)
+
+    total = len(paths_to_index)
+    progress = st.progress(0)
+    status = st.empty()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(_index_one, p) for p in paths_to_index]
+        done = 0
+        for fut in as_completed(futures):
+            path, err = fut.result()
+            done += 1
+            progress.progress(min(done / total, 1.0))
+            status.text(f"Indexed {done} of {total}…")
+            if err:
+                st.warning(f"Indexing failed for `{path}`: {err}")
+
+    progress.empty()
+    status.empty()
+
+def find_faces_by_reference(reference_image, *, top_k: int = 100, threshold: float = 0.6) -> list:
+    """Saves the search photo temporarily and runs cosine face search."""
+    temp_path = "temp_search_face.jpg"
+    with open(temp_path, "wb") as f:
+        f.write(reference_image.getbuffer())
+    return engine.search_by_face(temp_path, top_k=top_k, threshold=threshold)
+    # temp = "temp_search.jpg"
+    # with open(temp, "wb") as f: f.write(ref_file.getbuffer())
+    # return engine.search_by_face(temp)
 
 
-def clip_search(query: str, top_k: int = 20) -> list:
-    """Search gallery by text using CLIP. Replace with engine call."""
-    return []
-
-
-def filter_by_emotion(emotion: str) -> list:
-    """Filter gallery by emotion. Replace with engine call."""
-    return []
-
-
-def get_clusters() -> dict:
-    """Get photo clusters by person (DBSCAN). Replace with engine call."""
-    return {}
+def clip_search(query: str, top_k: int = 24, max_distance: float | None = 0.48) -> list:
+    """Search gallery by text using CLIP (multi-query + distance filter in engine)."""
+    return engine.search_by_text(query, top_k=top_k, max_distance=max_distance)
 
 
 # ---------------------------------------------------------------------------
@@ -84,153 +152,119 @@ def get_clusters() -> dict:
 st.sidebar.title("🖼️ Smart AI Gallery")
 st.sidebar.markdown("---")
 
+# page = st.sidebar.radio(
+#     "Navigate",
+#     ["Home", "Upload / Index", "Face Filter", "Smart Search"],
+#     label_visibility="collapsed",
+# )
 page = st.sidebar.radio(
     "Navigate",
-    ["Home", "Upload / Index", "Face Filter", "Smart Search"],
-    label_visibility="collapsed",
+    ["Home", "Upload / Index", "Face Filter", "Text Search"],
+    key="main_navigation",
 )
 
-st.sidebar.markdown("---")
-st.sidebar.caption("College Project • AI-powered photo discovery")
 
-# ---------------------------------------------------------------------------
-# Home Page
-# ---------------------------------------------------------------------------
+if st.sidebar.button("🗑️ Reset Gallery"):
+    engine.reset_database()
+    # Also delete the physical photos from the folder
+    if os.path.exists("gallery_photos"):
+        for file in os.listdir("gallery_photos"):
+            os.remove(os.path.join("gallery_photos", file))
+    st.session_state.pop("face_filter_matches", None)
+    st.rerun()
 
 if page == "Home":
     st.title("Smart AI Photo Gallery")
-    st.markdown("Upload photos, find faces, and search by mood or natural language.")
-    st.markdown("---")
+    c1, c2 = st.columns(2)
+    c1.metric("Total Photos", get_total_photos())
+    c2.metric("People (est.)", get_people_count())
+    st.caption(
+        "People count is an estimate from face embeddings (several cluster scales + "
+        "unpaired faces). It is closer to “how many identities might be here” than "
+        "a perfect head count."
+    )
+    st.info("Use the sidebar to upload and search your photos!")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        total = get_total_photos()
-        st.metric("Total Photos", total)
-    with col2:
-        people = get_people_count()
-        st.metric("People Found", people)
-
-    st.info("Use **Upload / Index** to add photos, **Face Filter** to find a face, and **Smart Search** for text and emotion filters.")
-
-# ---------------------------------------------------------------------------
-# Upload / Index Page
-# ---------------------------------------------------------------------------
+    gallery_paths = get_all_gallery_paths()
+    st.subheader("Your gallery")
+    if not gallery_paths:
+        st.caption("No indexed photos yet. Upload images from **Upload / Index**.")
+    else:
+        cols = st.columns(4)
+        for i, p in enumerate(gallery_paths):
+            cols[i % 4].image(p, use_container_width=True)
 
 elif page == "Upload / Index":
     st.title("Upload & Index")
-    st.markdown("Upload multiple photos to build your gallery. They will be indexed for face recognition, emotions, and search.")
-    st.markdown("---")
-
-    uploaded = st.file_uploader(
-        "Choose gallery images",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True,
-        help="Select one or more images to add to the gallery.",
+    st.caption(
+        "After updating the engine, use **Reset Gallery** once, then re-index so "
+        "faces use cosine distance and multi-face rows are stored correctly."
     )
-
-    if uploaded:
-        st.success(f"{len(uploaded)} file(s) selected.")
-        if st.button("Index photos"):
-            with st.spinner("Indexing…"):
-                index_uploaded_files(uploaded)
-            st.success("Indexing complete. Check Home for updated stats.")
-    else:
-        st.caption("No files selected yet.")
-
-# ---------------------------------------------------------------------------
-# Face Filter Page
-# ---------------------------------------------------------------------------
+    uploaded = st.file_uploader("Choose photos", type=["jpg", "png"], accept_multiple_files=True)
+    if uploaded and st.button("Index photos"):
+        with st.spinner("AI is analyzing your photos..."):
+            index_uploaded_files(uploaded)
+        st.success("Indexing complete!")
 
 elif page == "Face Filter":
     st.title("Face Filter")
-    st.markdown("Upload a reference photo to find all gallery images containing the same person.")
-    st.markdown("---")
+    thr = st.slider("Match strictness (cosine distance, lower = stricter)", 0.35, 0.85, 0.60, 0.01)
+    ref = st.file_uploader("Upload reference face", type=["jpg", "png"])
+    if ref and st.button("Find matches"):
+        matches = find_faces_by_reference(ref, top_k=100, threshold=float(thr))
+        st.session_state["face_filter_matches"] = matches if matches else []
+        if not matches:
+            st.warning("No matches found.")
 
-    ref = st.file_uploader(
-        "Search face (reference photo)",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=False,
-        key="face_ref",
+    match_paths: list[str] = st.session_state.get("face_filter_matches") or []
+    if match_paths:
+        zip_bytes = build_image_paths_zip(match_paths)
+        if zip_bytes:
+            st.download_button(
+                label="Download all matches (ZIP)",
+                data=zip_bytes,
+                file_name="face_search_matches.zip",
+                mime="application/zip",
+                key="face_match_zip_download",
+            )
+        cols = st.columns(4)
+        for i, p in enumerate(match_paths):
+            cols[i % 4].image(p, use_container_width=True)
+
+elif page == "Text Search":
+    st.title("Search by text")
+    st.caption(
+        "Describe objects, colors, places, or activities. The engine averages several "
+        "CLIP prompts and ranks images by cosine similarity, then drops weak matches."
     )
-
-    if ref is not None:
-        st.image(ref, caption="Reference face", use_container_width=True)
-        if st.button("Find matching faces"):
-            with st.spinner("Searching gallery…"):
-                matches = find_faces_by_reference(ref)
-            if matches:
-                st.subheader("Matching photos")
-                n = len(matches)
-                cols = st.columns(min(n, 4))
-                for i, item in enumerate(matches):
-                    # item can be path or (path, score); placeholder assumes path-like
-                    path = item if isinstance(item, (str, Path)) else item[0]
-                    with cols[i % len(cols)]:
-                        st.image(path, use_container_width=True)
-            else:
-                st.warning("No matching faces found in the gallery.")
-    else:
-        st.caption("Upload a reference face to start.")
-
-# ---------------------------------------------------------------------------
-# Smart Search Page (tabs: Emotion, Clustering, Natural Language)
-# ---------------------------------------------------------------------------
-
-elif page == "Smart Search":
-    st.title("Smart Search")
-    st.markdown("Filter by emotion, browse clusters by person, or search with natural language.")
-    st.markdown("---")
-
-    tab1, tab2, tab3 = st.tabs(["Emotion Filter", "Clustering by Person", "Natural Language Search"])
-
-    with tab1:
-        st.subheader("Filter by mood")
-        emotion = st.selectbox(
-            "Emotion",
-            ["Happy", "Sad", "Angry", "Surprise", "Fear", "Disgust", "Neutral"],
-            key="emotion",
+    query = st.text_input(
+        "Search for…",
+        placeholder="e.g. birthday cake, sunset at the beach, person in red shirt",
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        top_k = st.slider("Max images to show", 8, 48, 24, 4)
+    with c2:
+        cutoff = st.slider(
+            "Relevance cutoff (cosine distance; lower = stricter)",
+            0.28,
+            0.72,
+            0.48,
+            0.02,
         )
-        if st.button("Apply emotion filter", key="btn_emotion"):
-            results = filter_by_emotion(emotion)
-            if results:
-                st.write(f"Found {len(results)} photo(s).")
-                cols = st.columns(min(len(results), 4))
-                for i, path in enumerate(results):
-                    with cols[i % len(cols)]:
-                        st.image(path, use_container_width=True)
+    if st.button("Search", type="primary"):
+        q = (query or "").strip()
+        if not q:
+            st.warning("Enter a search phrase.")
+        else:
+            with st.spinner("Searching…"):
+                paths = clip_search(q, top_k=int(top_k), max_distance=float(cutoff))
+            if paths:
+                cols = st.columns(4)
+                for i, p in enumerate(paths):
+                    cols[i % 4].image(p, use_container_width=True)
             else:
-                st.info("No photos match this emotion.")
-
-    with tab2:
-        st.subheader("Photos grouped by person")
-        if st.button("Load clusters", key="btn_clusters"):
-            clusters = get_clusters()
-            if clusters:
-                for label, paths in clusters.items():
-                    st.write(f"**Person {label}** — {len(paths)} photo(s)")
-                    cols = st.columns(min(len(paths), 4))
-                    for i, path in enumerate(paths):
-                        with cols[i % len(cols)]:
-                            st.image(path, use_container_width=True)
-            else:
-                st.info("No clusters yet. Upload and index photos first.")
-
-    with tab3:
-        st.subheader("Search with text (CLIP)")
-        query = st.text_input("Describe what you're looking for", placeholder="e.g. sunset, person eating")
-        top_k = st.slider("Max results", 5, 50, 20, key="top_k")
-        if st.button("Search", key="btn_clip"):
-            if query.strip():
-                with st.spinner("Searching…"):
-                    results = clip_search(query.strip(), top_k=top_k)
-                if results:
-                    st.write(f"Top {len(results)} result(s).")
-                    cols = st.columns(min(len(results), 4))
-                    for i, item in enumerate(results):
-                        path = item if isinstance(item, (str, Path)) else item[0]
-                        with cols[i % len(cols)]:
-                            st.image(path, use_container_width=True)
-                else:
-                    st.warning("No results. Try different keywords or add more photos.")
-            else:
-                st.warning("Enter a search query.")
+                st.warning(
+                    "No images passed the relevance cutoff. Try a shorter phrase, "
+                    "different wording, or raise the cutoff slightly."
+                )

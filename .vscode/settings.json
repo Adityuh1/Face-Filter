@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "c:\\Users\\HP\\OneDrive\\Desktop\\streamlit\\faceFilter"
+    ],
+    "python.defaultInterpreterPath": "c:\\Users\\HP\\OneDrive\\Desktop\\streamlit\\faceFilter\\venv\\Scripts\\python.exe"
+}
