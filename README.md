@@ -1,4 +1,4 @@
-﻿# Smart AI Photo Gallery
+# Smart AI Photo Gallery
 
 A local-first photo gallery that uses face recognition and natural language search to help you find photos — without uploading anything to the cloud.
 
@@ -84,7 +84,7 @@ Re-indexing the same file replaces existing rows (IDs are derived from a SHA-256
 ### Install dependencies
 
 ```bash
-pip install streamlit deepface facenet-pytorch sentence-transformers chromadb scikit-learn opencv-python pillow numpy
+pip install -r requirements.txt
 ```
 
 > **Note:** DeepFace requires TensorFlow. Set the environment variable `TF_USE_LEGACY_KERAS=1` if you're on TensorFlow 2.16+ (the app sets this automatically).
